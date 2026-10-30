@@ -10,6 +10,22 @@ class EnstoBaseEntity(Entity):
         self._manager = manager
 
     @property
+    def should_poll(self) -> bool:
+        """Poll only in original mode; in sequential mode the update loop refreshes entities."""
+        return not self._manager.sequential
+
+    async def async_internal_added_to_hass(self) -> None:
+        """Register with the manager so the update loop refreshes this entity."""
+        await super().async_internal_added_to_hass()
+        self._manager.entities.append(self)
+
+    async def async_internal_will_remove_from_hass(self) -> None:
+        """Unregister from the manager."""
+        if self in self._manager.entities:
+            self._manager.entities.remove(self)
+        await super().async_internal_will_remove_from_hass()
+
+    @property
     def device_info(self):
         """Return device info for Home Assistant device registry.
 

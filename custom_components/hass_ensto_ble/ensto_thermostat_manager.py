@@ -2,6 +2,8 @@
 import logging
 import asyncio
 import time
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import Optional
 from bleak import BleakClient
 from bleak.exc import BleakError
@@ -60,6 +62,25 @@ FLOOR_TEMP_RANGE = (-5.0, 50.0)
 # Seconds to wait after a failed clock synchronization before trying again
 CLOCK_SYNC_RETRY_DELAY = 600
 
+# Seconds a device keeps the BLE slot after its last operation, so follow-up
+# reads (e.g. after a change made in the UI) reuse the same connection
+SESSION_LINGER_SECONDS = 10
+
+
+class _BleSlot:
+    """Shared by all thermostats: only one of them is connected at a time."""
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.owner: Optional["EnstoThermostatManager"] = None
+
+
+_BLE_SLOT = _BleSlot()
+
+# Set while connect() runs, so its own reads and writes don't take the slot again
+_CONNECTING: ContextVar[bool] = ContextVar("ensto_connecting", default=False)
+
+
 class EnstoThermostatManager:
     """Manager for Ensto BLE thermostats."""
 
@@ -77,6 +98,16 @@ class EnstoThermostatManager:
         self.connected_at: Optional[float] = None
         # Monotonic time of the last failed clock sync, None after a success
         self._clock_sync_failed_at: Optional[float] = None
+        # Entities of this device, refreshed together by refresh_entities()
+        self.entities: list = []
+        self._session_users = 0
+        self._release_handle: Optional[asyncio.TimerHandle] = None
+        # Set from the config entry options during setup
+        # False: original mode, stay connected and let entities poll themselves
+        self.sequential = True
+        self.next_refresh: float = 0.0
+        self.options_snapshot: dict = {}
+        self.energy_price_managed = False
 
     def get_real_time_coordinator(self):
         if not self.real_time_coordinator:
@@ -108,6 +139,15 @@ class EnstoThermostatManager:
 
     async def cleanup(self) -> None:
         """Clean up the connection."""
+        self._cancel_release()
+        if _BLE_SLOT.owner is self:
+            self._session_users = 0
+            await self.release()
+        else:
+            await self._disconnect()
+
+    async def _disconnect(self) -> None:
+        """Disconnect from the device."""
         try:
             if self.client and self.client.is_connected:
                 await self.client.disconnect()
@@ -116,9 +156,88 @@ class EnstoThermostatManager:
         finally:
             self.client = None
 
+    @asynccontextmanager
+    async def session(self):
+        """Hold the shared BLE slot and a connection to this device.
+
+        Waits until no other thermostat holds the slot. Nested and concurrent
+        sessions for the device that already holds the slot reuse its
+        connection. The slot is released SESSION_LINGER_SECONDS after the last
+        session ends, or immediately with release().
+        """
+        if _CONNECTING.get():
+            yield
+            return
+
+        if not self.sequential:
+            # Original mode keeps its own connection open and never takes the shared slot
+            await self.ensure_connection()
+            yield
+            return
+
+        if _BLE_SLOT.owner is self:
+            # Reconnect if the link dropped while we hold the slot
+            try:
+                await self.ensure_connection()
+            except Exception:
+                if not self._session_users:
+                    await self.release()
+                raise
+        else:
+            await _BLE_SLOT.lock.acquire()
+            try:
+                await self.ensure_connection()
+            except Exception:
+                _BLE_SLOT.lock.release()
+                raise
+            _BLE_SLOT.owner = self
+            _LOGGER.debug("Device [%s]: holding BLE slot", self.mac_address)
+
+        self._cancel_release()
+        self._session_users += 1
+        try:
+            yield
+        finally:
+            self._session_users -= 1
+            if self._session_users == 0 and _BLE_SLOT.owner is self:
+                self._release_handle = self.hass.loop.call_later(
+                    SESSION_LINGER_SECONDS,
+                    lambda: self.hass.async_create_task(self.release()),
+                )
+
+    def _cancel_release(self) -> None:
+        if self._release_handle:
+            self._release_handle.cancel()
+            self._release_handle = None
+
+    async def release(self) -> None:
+        """Disconnect and hand the BLE slot to the next device."""
+        self._cancel_release()
+        if _BLE_SLOT.owner is not self or self._session_users:
+            return
+        _BLE_SLOT.owner = None
+        try:
+            await self._disconnect()
+            _LOGGER.debug("Device [%s]: disconnected, BLE slot released", self.mac_address)
+        finally:
+            _BLE_SLOT.lock.release()
+
+    async def refresh_entities(self) -> None:
+        """Connect, update every entity of this device, then disconnect."""
+        try:
+            async with self.session():
+                for entity in list(self.entities):
+                    try:
+                        await entity.async_update_ha_state(force_refresh=True)
+                    except Exception as e:
+                        _LOGGER.error("Error refreshing %s: %s", entity.entity_id, e)
+        finally:
+            await self.release()
+
     async def connect(self) -> None:
         """Establish connection to the device."""
         if await self._connect_lock.acquire():
+            connecting = _CONNECTING.set(True)
             try:
                 if self.client and self.client.is_connected:
                     return
@@ -173,6 +292,7 @@ class EnstoThermostatManager:
                 self.client = None
                 raise
             finally:
+                _CONNECTING.reset(connecting)
                 self._connect_lock.release()
         else:
             raise Exception("Already connecting")
@@ -197,6 +317,15 @@ class EnstoThermostatManager:
         """
         name = label or uuid
 
+        try:
+            async with self.session():
+                return await self._ble_read_connected(uuid, name)
+        except Exception as e:
+            _LOGGER.error("Could not connect to read %s: %s", name, e)
+            return None
+
+    async def _ble_read_connected(self, uuid: str, name: str) -> Optional[bytes]:
+        """Read a characteristic over the connection held by the current session."""
         if not self.client or not self.client.is_connected:
             _LOGGER.error("Device not connected, cannot read %s.", name)
             return None
@@ -227,6 +356,15 @@ class EnstoThermostatManager:
         """
         name = label or uuid
 
+        try:
+            async with self.session():
+                return await self._ble_write_connected(uuid, data, name)
+        except Exception as e:
+            _LOGGER.error("Could not connect to write %s: %s", name, e)
+            return False
+
+    async def _ble_write_connected(self, uuid: str, data: bytes | bytearray, name: str) -> bool:
+        """Write a characteristic over the connection held by the current session."""
         if not self.client or not self.client.is_connected:
             _LOGGER.error("Device not connected, cannot write %s.", name)
             return False

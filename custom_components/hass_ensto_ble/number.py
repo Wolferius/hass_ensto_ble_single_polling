@@ -7,6 +7,7 @@ from homeassistant.components.number import (
 )
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers import device_registry as dr
@@ -428,6 +429,10 @@ class EnstoEnergyUnitPriceNumber(EnstoBaseEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Update the energy unit price value."""
+        if self._manager.energy_price_managed:
+            raise HomeAssistantError(
+                "The energy unit price is set in the integration options (Configure); clear the price fields there to set it here"
+            )
         try:
             success = await self._manager.write_energy_unit(self._currency, value)
             if success:

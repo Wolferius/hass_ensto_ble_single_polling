@@ -7,9 +7,34 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
-from .const import DOMAIN, CURRENCY_MAP
+from .const import (
+    DOMAIN,
+    CURRENCY_MAP,
+    CONF_POLLING_MODE,
+    POLLING_MODE_SEQUENTIAL,
+    POLLING_MODE_ORIGINAL,
+    DEFAULT_POLLING_MODE,
+    CONF_UPDATE_INTERVAL,
+    DEFAULT_UPDATE_INTERVAL,
+    CONF_ENERGY_PRICE,
+    CONF_ENERGY_PRICE_ENTITY,
+    ENERGY_PRICE_MIN,
+    ENERGY_PRICE_MAX,
+)
 from .ensto_thermostat_manager import EnstoThermostatManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,6 +53,12 @@ class EnstoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._discovered_devices = {}
         self._mac_address = None
         self._manager = None
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> EnstoOptionsFlow:
+        """Return the options flow behind the Configure button."""
+        return EnstoOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -89,8 +120,10 @@ class EnstoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._manager.setup()
             
             # Try to connect and authenticate the device
-            try: 
-                await self._manager.ensure_connection()
+            try:
+                async with self._manager.session():
+                    pass
+                await self._manager.release()
             except Exception as e:
                 _LOGGER.error("Action connect for [%s]: %s", self._mac_address, e)
                 return self.async_abort(
@@ -120,4 +153,55 @@ class EnstoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_CURRENCY, default=DEFAULT_CURRENCY): vol.In(currency_options)
                 }
             )
+        )
+
+
+class EnstoOptionsFlow(config_entries.OptionsFlow):
+    """Polling mode, polling interval and energy unit price for one thermostat."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Show and save the options."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_POLLING_MODE, default=DEFAULT_POLLING_MODE): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(
+                                value=POLLING_MODE_SEQUENTIAL,
+                                label="Sequential: connect, read and disconnect one thermostat at a time",
+                            ),
+                            SelectOptionDict(
+                                value=POLLING_MODE_ORIGINAL,
+                                label="Original: stay connected and update every 30 seconds",
+                            ),
+                        ],
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+                # In original mode this only sets how often a linked energy price is applied
+                vol.Required(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1, max=60, step=1, unit_of_measurement="min", mode=NumberSelectorMode.BOX
+                    )
+                ),
+                # Leave both price fields empty to manage the price with the Energy unit price entity
+                vol.Optional(CONF_ENERGY_PRICE): NumberSelector(
+                    NumberSelectorConfig(
+                        min=ENERGY_PRICE_MIN, max=ENERGY_PRICE_MAX, step=0.01, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                vol.Optional(CONF_ENERGY_PRICE_ENTITY): EntitySelector(
+                    EntitySelectorConfig(domain=["sensor", "input_number", "number"])
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(schema, self.config_entry.options),
         )

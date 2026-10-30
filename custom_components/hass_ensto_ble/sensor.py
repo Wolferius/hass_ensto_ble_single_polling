@@ -41,7 +41,6 @@ class EnstoBaseSensor(EnstoBaseEntity, SensorEntity):
         """Initialize the DateTime sensor for Ensto thermostat."""
         super().__init__(manager)
         self._sensor_type = sensor_type
-        self._attr_should_poll = True
         self._last_parsed_data = None
 
     async def async_added_to_hass(self) -> None:

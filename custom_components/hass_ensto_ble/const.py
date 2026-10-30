@@ -7,6 +7,28 @@ DOMAIN = "hass_ensto_ble"
 # Scan interval in seconds for the number.py, sensor.py, select.py and switch.py
 SCAN_INTERVAL = timedelta(seconds=30)
 
+# How often the update loop checks which thermostats are due for a refresh.
+# Devices are connected one at a time: connect, read every entity, disconnect,
+# then move on to the next device.
+UPDATE_TICK = timedelta(seconds=30)
+
+# Options set from the integration's Configure dialog. Like CONF_CURRENCY, the
+# keys double as the labels shown in the UI.
+CONF_UPDATE_INTERVAL = "Polling interval (minutes)"
+DEFAULT_UPDATE_INTERVAL = 5
+CONF_ENERGY_PRICE = "Fixed energy unit price (per kWh)"
+CONF_ENERGY_PRICE_ENTITY = "Energy unit price entity (overrides the fixed price)"
+CONF_POLLING_MODE = "Polling mode"
+# Connect, read and disconnect one thermostat at a time on the polling interval
+POLLING_MODE_SEQUENTIAL = "sequential"
+# Stay connected and let each entity poll every SCAN_INTERVAL (the upstream behaviour)
+POLLING_MODE_ORIGINAL = "original"
+DEFAULT_POLLING_MODE = POLLING_MODE_SEQUENTIAL
+
+# Range of the energy unit price the device can store (unsigned word / 100)
+ENERGY_PRICE_MIN = 0.0
+ENERGY_PRICE_MAX = 655.35
+
 # Device specific constants
 MANUFACTURER_ID = 0x2806  # Ensto manufacturer ID (big endian)
 
