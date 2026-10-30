@@ -7,6 +7,7 @@
 
 Custom component to read and write data from Ensto BLE thermostats.
 Difference from main repo is that it only uses one slot for connecting, and polls each device individually every x minutes.
+Also added possibility to set entity as kWh price, ie. an existing nordpool sensor can be used and updated automatically.
 
 ## Compatibility
 
