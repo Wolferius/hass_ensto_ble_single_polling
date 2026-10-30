@@ -8,8 +8,6 @@
 Custom component to read and write data from Ensto BLE thermostats.
 Difference from main repo is that it only uses one slot for connecting, and polls each device individually every x minutes.
 
-Disclaimer: Vibecoded..
-
 ## Compatibility
 
 - **Tested environment:** Raspberry Pi 4, Raspberry Pi 5, Home Assistant OS 18.4, Supervisor 2026.10.4, Core 2026.10.4
