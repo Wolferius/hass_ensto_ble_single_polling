@@ -31,18 +31,17 @@ class EnstoRealTimeCoordinator:
             # Read new data
             LOGGER.debug("Reading new data for %s (%s)",
                         device_name, self._manager.mac_address)
-            # The coordinator owns reconnecting; BLE helpers only check the connection
-            await self._manager.ensure_connection()
+            # The session waits for the shared BLE slot and connects if needed
+            async with self._manager.session():
+                connected_at = self._manager.connected_at
+                if connected_at is not None:
+                    wait = CONNECT_SETTLE_SECONDS - (time.monotonic() - connected_at)
+                    if wait > 0:
+                        LOGGER.debug("Waiting %.1f s for %s (%s) to settle after connecting",
+                                     wait, device_name, self._manager.mac_address)
+                        await asyncio.sleep(wait)
 
-            connected_at = self._manager.connected_at
-            if connected_at is not None:
-                wait = CONNECT_SETTLE_SECONDS - (time.monotonic() - connected_at)
-                if wait > 0:
-                    LOGGER.debug("Waiting %.1f s for %s (%s) to settle after connecting",
-                                 wait, device_name, self._manager.mac_address)
-                    await asyncio.sleep(wait)
-
-            raw_data = await self._manager._ble_read_split(REAL_TIME_INDICATION_UUID, "real-time indication")
+                raw_data = await self._manager._ble_read_split(REAL_TIME_INDICATION_UUID, "real-time indication")
             if raw_data:
                 self._last_data = self._manager.parse_real_time_indication(raw_data)
                 self._last_update = now

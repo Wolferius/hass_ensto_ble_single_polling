@@ -39,6 +39,20 @@ Disclaimer: Vibecoded..
 4. Select your thermostat from the discovered devices list
 5. Choose currency for energy calculations (stored in thermostat memory)
 
+### Polling and Integration Options
+
+Thermostats are polled one at a time: the integration connects to a thermostat, updates all of its entities, disconnects, and then moves on to the next one. Only one Bluetooth connection is open at any moment, which suits adapters and Bluetooth proxies with few connection slots.
+
+Each thermostat has its own options under **Settings → Devices & services → Hass Ensto BLE → Configure**:
+
+- **Polling interval (minutes):** How often the thermostat is read (1-60, default 5)
+- **Fixed energy unit price (per kWh):** Written to the thermostat when it differs from the stored price (0-655.35)
+- **Energy unit price entity:** A `sensor`, `input_number` or `number` entity (for example a spot price sensor). Overrides the fixed price. The value is used as-is, so the entity must report the price in the same unit (e.g. €/kWh, not c/kWh). Negative prices are stored as 0
+
+The price is written during the next poll. When a price is set in the options, the Energy unit price entity cannot be changed manually; clear both price fields to manage the price from the entity again.
+
+Changes made from Home Assistant (for example toggling Boost) connect to the thermostat right away. If another thermostat is being polled at that moment, the change waits a few seconds for it to finish.
+
 ### Adding Thermostat to Dashboard
 
 1. Navigate to **Settings → Devices & services → Helpers → Create helper**
@@ -274,6 +288,14 @@ Some users need additional pairing via terminal to establish a Bluetooth connect
    ```
 5. Set your Ensto thermostat to pairing mode (blue LED blinking)
 6. Proceed with adding the thermostat in Home Assistant
+
+### Weak Signal and Bluetooth Proxies
+
+`TimeoutError` when adding a thermostat usually means the signal is too weak; aim for -80 dBm or better. A Bluetooth proxy close to the thermostat (for example an ESPHome Bluetooth proxy with `active: true`) helps. Home Assistant automatically connects through the adapter or proxy that hears the thermostat best.
+
+Bluetooth pairing keys are stored per adapter or proxy, so a thermostat that starts connecting through a new proxy may need to be paired again once. The Factory Reset ID is stored in Home Assistant and does not need to be read again.
+
+When using an Android tablet as a Bluetooth proxy, `ESP_GATT_ERROR` while adding a thermostat means Android has not paired with it yet. Put the thermostat in pairing mode and pair it in the tablet's **Android Settings → Bluetooth** first, then add it in Home Assistant with the thermostat in pairing mode again.
 
 ### Time Sync Issues
 

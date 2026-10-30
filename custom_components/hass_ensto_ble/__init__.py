@@ -1,17 +1,27 @@
 """The Ensto BLE integration."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
 
 from .const import (
     DOMAIN,
+    UPDATE_TICK,
+    CONF_UPDATE_INTERVAL,
+    DEFAULT_UPDATE_INTERVAL,
+    CONF_ENERGY_PRICE,
+    CONF_ENERGY_PRICE_ENTITY,
+    ENERGY_PRICE_MIN,
+    ENERGY_PRICE_MAX,
 )
 
 from .config_flow import CONF_CURRENCY, DEFAULT_CURRENCY
@@ -65,8 +75,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnstoConfigEntry) -> boo
         
         # Setup scanner and verify connection
         manager.setup()
-        await manager.ensure_connection()
-        
+        async with manager.session():
+            pass
+
         # Store the manager instance in runtime_data
         entry.runtime_data = manager
 
@@ -92,6 +103,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnstoConfigEntry) -> boo
 
         except Exception as e:
             _LOGGER.warning("Failed to initialize device currency: %s", e)
+
+        # Apply the energy price from the options, if one is configured
+        manager.energy_price_managed = bool(
+            entry.options.get(CONF_ENERGY_PRICE_ENTITY) or entry.options.get(CONF_ENERGY_PRICE) is not None
+        )
+        await _apply_energy_price(hass, entry, manager)
 
         async def get_calendar_day(call: ServiceCall) -> None:
                     """Get calendar day programs service."""
@@ -189,7 +206,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnstoConfigEntry) -> boo
 
         # Set up the platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        
+
+        # Disconnect now that the initial values are read; the update loop reconnects
+        await manager.release()
+        manager.next_refresh = time.monotonic() + _update_interval_seconds(entry)
+        _start_update_loop(hass)
+
+        # Reload when the options change, so the new interval and price apply at once
+        manager.options_snapshot = dict(entry.options)
+        entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
         return True
         
     except Exception as ex:
@@ -212,8 +238,88 @@ async def async_unload_entry(hass: HomeAssistant, entry: EnstoConfigEntry) -> bo
     if not remaining_entries:
         hass.services.async_remove(DOMAIN, SERVICE_GET_CALENDAR_DAY)
         hass.services.async_remove(DOMAIN, SERVICE_SET_CALENDAR_DAY)
+        cancel_update_loop = hass.data.get(DOMAIN, {}).pop("cancel_update_loop", None)
+        if cancel_update_loop:
+            cancel_update_loop()
 
     return unload_ok
+
+async def _async_options_updated(hass: HomeAssistant, entry: EnstoConfigEntry) -> None:
+    """Reload the entry after its options were changed."""
+    # Update listeners also fire on title changes; only reload for new options
+    if entry.options == entry.runtime_data.options_snapshot:
+        return
+    await hass.config_entries.async_reload(entry.entry_id)
+
+def _update_interval_seconds(entry: EnstoConfigEntry) -> float:
+    return float(entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)) * 60
+
+def _configured_energy_price(hass: HomeAssistant, entry: EnstoConfigEntry) -> float | None:
+    """Return the price from the linked entity or the fixed option, or None if neither is set."""
+    entity_id = entry.options.get(CONF_ENERGY_PRICE_ENTITY)
+    if entity_id:
+        state = hass.states.get(entity_id)
+        try:
+            price = float(state.state)
+        except (AttributeError, TypeError, ValueError):
+            _LOGGER.warning("Energy price entity %s has no numeric state (%s), using the fixed price",
+                            entity_id, state.state if state else "missing")
+        else:
+            # The device stores 0..655.35; negative spot prices are stored as 0
+            return min(max(price, ENERGY_PRICE_MIN), ENERGY_PRICE_MAX)
+
+    return entry.options.get(CONF_ENERGY_PRICE)
+
+async def _apply_energy_price(hass: HomeAssistant, entry: EnstoConfigEntry, manager: EnstoThermostatManager) -> None:
+    """Write the configured energy price to the device when it differs from the stored one."""
+    price = _configured_energy_price(hass, entry)
+    if price is None:
+        return
+
+    current = await manager.read_energy_unit()
+    if current is None:
+        _LOGGER.warning("Could not read energy unit from %s, price not updated", manager.mac_address)
+        return
+    # The device stores the price with two decimals
+    if round(current['price'], 2) == round(price, 2):
+        return
+
+    if await manager.write_energy_unit(current['currency_code'], price):
+        _LOGGER.info("Energy unit price for %s (%s) set to %.2f",
+                     manager.device_name or "Unknown", manager.mac_address, price)
+
+def _start_update_loop(hass: HomeAssistant) -> None:
+    """Refresh each thermostat when its polling interval is due, one device at a time."""
+    data = hass.data.setdefault(DOMAIN, {})
+    if "cancel_update_loop" in data:
+        return
+
+    running = asyncio.Lock()
+
+    async def _refresh_due(now=None) -> None:
+        if running.locked():
+            return
+        async with running:
+            for entry in hass.config_entries.async_entries(DOMAIN):
+                # Re-check each time; an entry may be unloaded during the round
+                if entry.state is not ConfigEntryState.LOADED:
+                    continue
+                manager = entry.runtime_data
+                if time.monotonic() < manager.next_refresh:
+                    continue
+                _LOGGER.debug("Refreshing %s (%s)", manager.device_name, manager.mac_address)
+                try:
+                    # The price write and the entity refresh share one connection
+                    await _apply_energy_price(hass, entry, manager)
+                    await manager.refresh_entities()
+                except Exception as e:
+                    _LOGGER.warning("Could not refresh %s (%s): %s",
+                                    manager.device_name or "Unknown", manager.mac_address, e)
+                manager.next_refresh = time.monotonic() + _update_interval_seconds(entry)
+
+    data["cancel_update_loop"] = async_track_time_interval(
+        hass, _refresh_due, UPDATE_TICK, cancel_on_shutdown=True
+    )
 
 async def async_remove_entry(hass: HomeAssistant, entry: EnstoConfigEntry) -> None:
     """Remove a config entry.
