@@ -15,11 +15,19 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
 )
 
 from .const import (
     DOMAIN,
     CURRENCY_MAP,
+    CONF_POLLING_MODE,
+    POLLING_MODE_SEQUENTIAL,
+    POLLING_MODE_ORIGINAL,
+    DEFAULT_POLLING_MODE,
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
     CONF_ENERGY_PRICE,
@@ -149,7 +157,7 @@ class EnstoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class EnstoOptionsFlow(config_entries.OptionsFlow):
-    """Polling interval and energy unit price for one thermostat."""
+    """Polling mode, polling interval and energy unit price for one thermostat."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -160,6 +168,22 @@ class EnstoOptionsFlow(config_entries.OptionsFlow):
 
         schema = vol.Schema(
             {
+                vol.Required(CONF_POLLING_MODE, default=DEFAULT_POLLING_MODE): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(
+                                value=POLLING_MODE_SEQUENTIAL,
+                                label="Sequential: connect, read and disconnect one thermostat at a time",
+                            ),
+                            SelectOptionDict(
+                                value=POLLING_MODE_ORIGINAL,
+                                label="Original: stay connected and update every 30 seconds",
+                            ),
+                        ],
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+                # In original mode this only sets how often a linked energy price is applied
                 vol.Required(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL): NumberSelector(
                     NumberSelectorConfig(
                         min=1, max=60, step=1, unit_of_measurement="min", mode=NumberSelectorMode.BOX

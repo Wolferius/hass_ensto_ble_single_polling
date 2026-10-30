@@ -103,6 +103,8 @@ class EnstoThermostatManager:
         self._session_users = 0
         self._release_handle: Optional[asyncio.TimerHandle] = None
         # Set from the config entry options during setup
+        # False: original mode, stay connected and let entities poll themselves
+        self.sequential = True
         self.next_refresh: float = 0.0
         self.options_snapshot: dict = {}
         self.energy_price_managed = False
@@ -164,6 +166,12 @@ class EnstoThermostatManager:
         session ends, or immediately with release().
         """
         if _CONNECTING.get():
+            yield
+            return
+
+        if not self.sequential:
+            # Original mode keeps its own connection open and never takes the shared slot
+            await self.ensure_connection()
             yield
             return
 

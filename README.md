@@ -45,7 +45,10 @@ Thermostats are polled one at a time: the integration connects to a thermostat, 
 
 Each thermostat has its own options under **Settings → Devices & services → Hass Ensto BLE → Configure**:
 
-- **Polling interval (minutes):** How often the thermostat is read (1-60, default 5)
+- **Polling mode:**
+  - **Sequential** (default): connect, read and disconnect one thermostat at a time on the polling interval, as described above
+  - **Original:** the upstream behaviour. The thermostat stays connected and its entities update every 30 seconds. It does not take part in the one-at-a-time queue, so it never delays sequential thermostats, but it keeps a Bluetooth connection slot occupied permanently
+- **Polling interval (minutes):** How often the thermostat is read (1-60, default 5). In Original mode it only sets how often a linked energy price is applied
 - **Fixed energy unit price (per kWh):** Written to the thermostat when it differs from the stored price (0-655.35)
 - **Energy unit price entity:** A `sensor`, `input_number` or `number` entity (for example a spot price sensor). Overrides the fixed price. The value is used as-is, so the entity must report the price in the same unit (e.g. €/kWh, not c/kWh). Negative prices are stored as 0
 

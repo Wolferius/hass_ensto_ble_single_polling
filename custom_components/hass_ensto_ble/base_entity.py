@@ -5,12 +5,14 @@ from .const import DOMAIN
 class EnstoBaseEntity(Entity):
     """Base entity class for Ensto BLE."""
 
-    # Entities are refreshed by the integration's sequential update loop, not polled
-    _attr_should_poll = False
-
     def __init__(self, manager):
         """Initialize the base entity."""
         self._manager = manager
+
+    @property
+    def should_poll(self) -> bool:
+        """Poll only in original mode; in sequential mode the update loop refreshes entities."""
+        return not self._manager.sequential
 
     async def async_internal_added_to_hass(self) -> None:
         """Register with the manager so the update loop refreshes this entity."""

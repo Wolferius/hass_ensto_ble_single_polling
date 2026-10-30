@@ -16,6 +16,9 @@ from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, Se
 from .const import (
     DOMAIN,
     UPDATE_TICK,
+    CONF_POLLING_MODE,
+    POLLING_MODE_ORIGINAL,
+    DEFAULT_POLLING_MODE,
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
     CONF_ENERGY_PRICE,
@@ -72,7 +75,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnstoConfigEntry) -> boo
     try:
         # Initialize the thermostat manager
         manager = EnstoThermostatManager(hass, entry.data["mac_address"])
-        
+        manager.sequential = (
+            entry.options.get(CONF_POLLING_MODE, DEFAULT_POLLING_MODE) != POLLING_MODE_ORIGINAL
+        )
+
         # Setup scanner and verify connection
         manager.setup()
         async with manager.session():
@@ -207,7 +213,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnstoConfigEntry) -> boo
         # Set up the platforms
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-        # Disconnect now that the initial values are read; the update loop reconnects
+        # Disconnect now that the initial values are read; the update loop reconnects.
+        # In original mode release() does nothing and the connection stays open.
         await manager.release()
         manager.next_refresh = time.monotonic() + _update_interval_seconds(entry)
         _start_update_loop(hass)
@@ -311,7 +318,9 @@ def _start_update_loop(hass: HomeAssistant) -> None:
                 try:
                     # The price write and the entity refresh share one connection
                     await _apply_energy_price(hass, entry, manager)
-                    await manager.refresh_entities()
+                    # Original-mode entities poll themselves; only the price is handled here
+                    if manager.sequential:
+                        await manager.refresh_entities()
                 except Exception as e:
                     _LOGGER.warning("Could not refresh %s (%s): %s",
                                     manager.device_name or "Unknown", manager.mac_address, e)
