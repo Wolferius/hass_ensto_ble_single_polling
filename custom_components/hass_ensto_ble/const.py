@@ -24,6 +24,13 @@ POLLING_MODE_SEQUENTIAL = "sequential"
 # Stay connected and let each entity poll every SCAN_INTERVAL (the upstream behaviour)
 POLLING_MODE_ORIGINAL = "original"
 DEFAULT_POLLING_MODE = POLLING_MODE_SEQUENTIAL
+# Bluetooth adapter or proxy (its source address) used to connect. A thermostat
+# keeps a bond with one device only, so it must always be reached through the
+# adapter it was paired with
+CONF_BLE_ADAPTER = "Bluetooth adapter"
+# Let Home Assistant pick the adapter with the best signal (the upstream behaviour)
+BLE_ADAPTER_AUTO = "auto"
+DEFAULT_BLE_ADAPTER = BLE_ADAPTER_AUTO
 
 # Range of the energy unit price the device can store (unsigned word / 100)
 ENERGY_PRICE_MIN = 0.0

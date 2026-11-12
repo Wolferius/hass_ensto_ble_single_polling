@@ -19,6 +19,8 @@ from .const import (
     CONF_POLLING_MODE,
     POLLING_MODE_ORIGINAL,
     DEFAULT_POLLING_MODE,
+    CONF_BLE_ADAPTER,
+    BLE_ADAPTER_AUTO,
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
     CONF_ENERGY_PRICE,
@@ -78,6 +80,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnstoConfigEntry) -> boo
         manager.sequential = (
             entry.options.get(CONF_POLLING_MODE, DEFAULT_POLLING_MODE) != POLLING_MODE_ORIGINAL
         )
+        adapter = entry.options.get(CONF_BLE_ADAPTER, BLE_ADAPTER_AUTO)
+        manager.ble_source = None if adapter == BLE_ADAPTER_AUTO else adapter
 
         # Setup scanner and verify connection
         manager.setup()

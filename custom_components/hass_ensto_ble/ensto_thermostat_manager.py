@@ -10,6 +10,11 @@ from bleak.exc import BleakError
 from bleak_retry_connector import establish_connection, BleakClientWithServiceCache
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
+
+try:
+    from habluetooth.wrappers import HaBleakClientWrapper
+except ImportError:  # pragma: no cover - habluetooth ships with Home Assistant
+    HaBleakClientWrapper = None
 from .storage_manager import EnstoStorageManager
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
@@ -81,6 +86,38 @@ _BLE_SLOT = _BleSlot()
 _CONNECTING: ContextVar[bool] = ContextVar("ensto_connecting", default=False)
 
 
+def _pinned_client_class(address: str, source: str) -> type:
+    """Return a BleakClient class that connects through one adapter or proxy only.
+
+    Home Assistant's client wrapper always picks the adapter with the best
+    signal, ignoring the BLEDevice it was given. An Ensto thermostat keeps a
+    bond with one device only, so connecting through any other adapter fails
+    with an authentication error. This overrides only that choice; slot
+    accounting and connection tracking stay with Home Assistant.
+    """
+    if HaBleakClientWrapper is None:
+        raise BleakError("Pinning a Bluetooth adapter needs Home Assistant's Bluetooth stack")
+    base = (
+        BleakClientWithServiceCache
+        if issubclass(BleakClientWithServiceCache, HaBleakClientWrapper)
+        else HaBleakClientWrapper
+    )
+
+    class _PinnedClient(base):
+        def _async_get_best_available_backend_and_device(self, manager):
+            for device in manager.async_scanner_devices_by_address(address, True):
+                if device.scanner.source != source:
+                    continue
+                if backend := self._async_get_backend_for_ble_device(
+                    manager, device.scanner, device.ble_device
+                ):
+                    return backend
+                raise BleakError(f"{address}: {device.scanner.name} has no free connection slot")
+            raise BleakError(f"{address}: not reachable through Bluetooth adapter {source}")
+
+    return _PinnedClient
+
+
 class EnstoThermostatManager:
     """Manager for Ensto BLE thermostats."""
 
@@ -105,6 +142,9 @@ class EnstoThermostatManager:
         # Set from the config entry options during setup
         # False: original mode, stay connected and let entities poll themselves
         self.sequential = True
+        # Source address of the adapter or proxy to connect through, None for automatic
+        self.ble_source: Optional[str] = None
+        self._pinned_client: Optional[type] = None
         self.next_refresh: float = 0.0
         self.options_snapshot: dict = {}
         self.energy_price_managed = False
@@ -246,13 +286,31 @@ class EnstoThermostatManager:
                     return
 
                 _LOGGER.debug("Finding device %s", self.mac_address)
-                device = bluetooth.async_ble_device_from_address(self.hass, self.mac_address)
-                if not device:
-                    raise Exception(f"Device {self.mac_address} not found")
+                if self.ble_source:
+                    device = self._pinned_ble_device()
+                    if not device:
+                        raise Exception(
+                            f"Device {self.mac_address} not seen by Bluetooth adapter {self.ble_source}"
+                        )
+                    if self._pinned_client is None:
+                        self._pinned_client = _pinned_client_class(self.mac_address, self.ble_source)
+                    client_class = self._pinned_client
+                    device_callback = self._pinned_ble_device
+                else:
+                    device = bluetooth.async_ble_device_from_address(self.hass, self.mac_address)
+                    if not device:
+                        raise Exception(f"Device {self.mac_address} not found")
+                    client_class = BleakClientWithServiceCache
+                    device_callback = None
 
                 # Use bleak-retry-connector
-                _LOGGER.debug("Device [%s]: establishing connection", self.mac_address)
-                self.client = await establish_connection(BleakClientWithServiceCache, device, self.mac_address)
+                _LOGGER.debug(
+                    "Device [%s]: establishing connection via %s",
+                    self.mac_address, self.ble_source or "best adapter",
+                )
+                self.client = await establish_connection(
+                    client_class, device, self.mac_address, ble_device_callback=device_callback
+                )
                 _LOGGER.debug("Device [%s]: connection established", self.mac_address)
 
                 # always pair to set encryption
@@ -291,14 +349,25 @@ class EnstoThermostatManager:
                 self.connected_at = time.monotonic()
 
             except Exception as e:
-                _LOGGER.error("Failed to connect: %s", str(e))
-                self.client = None
+                _LOGGER.error("Failed to connect to %s: %s", self.mac_address, str(e))
+                # Drop a link that came up before pairing or the ID write failed,
+                # so it does not hold an adapter or proxy connection slot
+                await self._disconnect()
                 raise
             finally:
                 _CONNECTING.reset(connecting)
                 self._connect_lock.release()
         else:
             raise Exception("Already connecting")
+
+    def _pinned_ble_device(self):
+        """Return this device as seen by the configured adapter, or None."""
+        for device in bluetooth.async_scanner_devices_by_address(
+            self.hass, self.mac_address, connectable=True
+        ):
+            if device.scanner.source == self.ble_source:
+                return device.ble_device
+        return None
 
     async def ensure_connection(self) -> None:
         """Ensure that we have a connection to the device."""

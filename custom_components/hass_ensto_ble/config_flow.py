@@ -7,6 +7,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.components import bluetooth
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import (
@@ -28,6 +29,9 @@ from .const import (
     POLLING_MODE_SEQUENTIAL,
     POLLING_MODE_ORIGINAL,
     DEFAULT_POLLING_MODE,
+    CONF_BLE_ADAPTER,
+    BLE_ADAPTER_AUTO,
+    DEFAULT_BLE_ADAPTER,
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
     CONF_ENERGY_PRICE,
@@ -157,7 +161,7 @@ class EnstoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class EnstoOptionsFlow(config_entries.OptionsFlow):
-    """Polling mode, polling interval and energy unit price for one thermostat."""
+    """Bluetooth adapter, polling mode, polling interval and energy unit price for one thermostat."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -166,8 +170,29 @@ class EnstoOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(data=user_input)
 
+        # Connectable adapters and proxies Home Assistant has now; keep the saved one
+        # listed even while it is offline, so opening the dialog does not drop it
+        adapter_options = [
+            SelectOptionDict(value=BLE_ADAPTER_AUTO, label="Automatic: best signal (any adapter)")
+        ]
+        seen = {BLE_ADAPTER_AUTO}
+        for scanner in bluetooth.async_current_scanners(self.hass):
+            if scanner.connectable and scanner.source not in seen:
+                seen.add(scanner.source)
+                adapter_options.append(SelectOptionDict(value=scanner.source, label=scanner.name))
+        saved_adapter = self.config_entry.options.get(CONF_BLE_ADAPTER)
+        if saved_adapter and saved_adapter not in seen:
+            adapter_options.append(
+                SelectOptionDict(value=saved_adapter, label=f"{saved_adapter} (not available now)")
+            )
+
         schema = vol.Schema(
             {
+                # The thermostat is bonded with one adapter only; connecting through any
+                # other one fails with an authentication error
+                vol.Required(CONF_BLE_ADAPTER, default=DEFAULT_BLE_ADAPTER): SelectSelector(
+                    SelectSelectorConfig(options=adapter_options, mode=SelectSelectorMode.DROPDOWN)
+                ),
                 vol.Required(CONF_POLLING_MODE, default=DEFAULT_POLLING_MODE): SelectSelector(
                     SelectSelectorConfig(
                         options=[

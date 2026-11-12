@@ -44,6 +44,9 @@ Thermostats are polled one at a time: the integration connects to a thermostat, 
 
 Each thermostat has its own options under **Settings → Devices & services → Hass Ensto BLE → Configure**:
 
+- **Bluetooth adapter:** The adapter or proxy used to connect to the thermostat.
+  - **Automatic** (default): Home Assistant connects through whichever adapter hears the thermostat best.
+  - **A specific adapter or proxy:** always connect through that one, and never fall back to another. A thermostat keeps a pairing with only one device, so choose the adapter or proxy it is paired with. Otherwise a closer adapter that isn't paired fails with `AuthenticationFailed`.
 - **Polling mode:**
   - **Sequential** (default): connect, read and disconnect one thermostat at a time on the polling interval, as described above
   - **Original:** the upstream behaviour. The thermostat stays connected and its entities update every 30 seconds. It does not take part in the one-at-a-time queue, so it never delays sequential thermostats, but it keeps a Bluetooth connection slot occupied permanently
@@ -293,7 +296,7 @@ Some users need additional pairing via terminal to establish a Bluetooth connect
 
 ### Weak Signal and Bluetooth Proxies
 
-`TimeoutError` when adding a thermostat usually means the signal is too weak; aim for -80 dBm or better. A Bluetooth proxy close to the thermostat (for example an ESPHome Bluetooth proxy with `active: true`) helps. Home Assistant automatically connects through the adapter or proxy that hears the thermostat best.
+`TimeoutError` when adding a thermostat usually means the signal is too weak; aim for -80 dBm or better. A Bluetooth proxy close to the thermostat (for example an ESPHome Bluetooth proxy with `active: true`) helps. Home Assistant automatically connects through the adapter or proxy that hears the thermostat best. If that isn't the one the thermostat is paired with, the connection fails with `[org.bluez.Error.AuthenticationFailed]` (local adapter) or a GATT error (proxy). In that case, set the **Bluetooth adapter** option to the adapter or proxy the thermostat is paired with.
 
 Bluetooth pairing keys are stored per adapter or proxy, so a thermostat that starts connecting through a new proxy may need to be paired again once. The Factory Reset ID is stored in Home Assistant and does not need to be read again.
 
