@@ -179,7 +179,9 @@ class EnstoThermostatManager:
             # Reconnect if the link dropped while we hold the slot
             try:
                 await self.ensure_connection()
-            except Exception:
+            except BaseException:
+                # BaseException: a cancelled task (e.g. HA timing out entity setup)
+                # must not keep the slot, or every thermostat stops polling for good
                 if not self._session_users:
                     await self.release()
                 raise
@@ -187,7 +189,8 @@ class EnstoThermostatManager:
             await _BLE_SLOT.lock.acquire()
             try:
                 await self.ensure_connection()
-            except Exception:
+            except BaseException:
+                # BaseException: also free the slot when this task is cancelled
                 _BLE_SLOT.lock.release()
                 raise
             _BLE_SLOT.owner = self
